@@ -51,6 +51,7 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { metricTreeService } from "./services/metric-tree.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -975,7 +976,27 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  // Nightly VAT metric-tree job (POS-168): compute + persist per-company weekly
+  // aggregates and log week-over-week band-breach alerts. Reuses the heartbeat
+  // scheduler flag; wall-clock daily interval (not a fixed-time cron).
+  if (config.heartbeatSchedulerEnabled) {
+    const metricTree = metricTreeService(db as any);
+    const METRIC_TREE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    setInterval(() => {
+      void metricTree
+        .runNightly()
+        .then((summary) => {
+          if (summary.alerts > 0 || summary.failed > 0) {
+            logger.warn({ ...summary }, "nightly metric-tree run raised alerts or failures");
+          } else {
+            logger.info({ ...summary }, "nightly metric-tree run completed");
+          }
+        })
+        .catch((err) => logger.error({ err }, "nightly metric-tree run failed"));
+    }, METRIC_TREE_INTERVAL_MS);
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
