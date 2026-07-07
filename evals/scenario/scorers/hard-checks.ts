@@ -138,8 +138,17 @@ export function commentWakeAcknowledgedSubstantively(snap: EndStateSnapshot): Ch
  */
 export function checkoutPrecedesMutation(snap: EndStateSnapshot): CheckResult {
   const id = "checkout_precedes_mutation";
-  const firstCheckoutIdx = snap.activity.findIndex((e) => e.type === CHECKOUT_ACTION);
-  const firstMutationIdx = snap.activity.findIndex((e) => isMutationAction(e.type));
+  // Scope both lookups to the agent under test. Foreign actors mutate this issue
+  // during a run — the runner seeds/comments, and the server emits issue.updated
+  // on assignment/recovery/comment flows. Ignoring the actor would (a) false-fail
+  // when a foreign mutation precedes the agent's own checkout, and (b) false-pass
+  // (a gaming hole) if a foreign checkout let the agent write before its own.
+  const firstCheckoutIdx = snap.activity.findIndex(
+    (e) => e.actorAgentId === snap.agentUnderTestId && e.type === CHECKOUT_ACTION,
+  );
+  const firstMutationIdx = snap.activity.findIndex(
+    (e) => e.actorAgentId === snap.agentUnderTestId && isMutationAction(e.type),
+  );
 
   if (firstMutationIdx === -1) {
     return ok(id, "no mutating activity — N/A");

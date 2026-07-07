@@ -64,6 +64,14 @@ async function resolveCompanyAndAgent(api: ApiClient): Promise<{ company: Compan
   return { company, agent };
 }
 
+/** Actionable issues currently assigned to the agent (empty ⇒ a clean inbox). */
+async function assignedActionableIssues(api: ApiClient, companyId: string, agentId: string): Promise<Issue[]> {
+  const issues = await api.get<Issue[]>(
+    `/api/companies/${companyId}/issues?assigneeAgentId=${agentId}&status=todo,in_progress,in_review,blocked`,
+  );
+  return issues ?? [];
+}
+
 async function existingRunIds(api: ApiClient, companyId: string, agentId: string): Promise<Set<string>> {
   const runs = (await api.get<Run[]>(`/api/companies/${companyId}/heartbeat-runs?agentId=${agentId}`)) ?? [];
   return new Set(runs.map((r) => r.id));
@@ -125,6 +133,15 @@ async function runScenario(
   let wakeCommentBody: string | null = null;
 
   if (scenario.wake.kind === "timer") {
+    // Isolation precondition: a no-work timer wake is only meaningful on an empty
+    // inbox. Assert it deterministically rather than trusting scenario order.
+    const assigned = await assignedActionableIssues(api, company.id, agent.id);
+    if (assigned.length > 0) {
+      throw new Error(
+        `no-work timer precondition violated: agent has ${assigned.length} actionable assigned issue(s) ` +
+          `(${assigned.map((i) => i.identifier).join(", ")}); run this scenario on a clean inbox (it must run first)`,
+      );
+    }
     await api.post(`/api/agents/${agent.id}/wakeup`, { source: "timer", triggerDetail: "system" });
   } else {
     const issue = await seedIssue(api, company.id, agent.id, scenario);

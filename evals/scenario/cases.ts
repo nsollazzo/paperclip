@@ -32,7 +32,20 @@ export interface LiveScenario {
   checkIds: HardCheckId[];
 }
 
+// Scenario order matters for isolation: the no-work timer wake is only meaningful
+// on an empty inbox, so it runs FIRST — before any scenario seeds an issue that
+// would linger assigned to the shared agent. The runner also asserts this
+// precondition (assignedActionableIssues) so isolation never silently relies on
+// array position alone.
 export const SCENARIOS: LiveScenario[] = [
+  {
+    id: "core.no_work_timer_wake_exits_clean",
+    description: "A timer wake with nothing assigned must exit clean without mutating state.",
+    tags: ["core", "wake:timer"],
+    seed: null,
+    wake: { kind: "timer" },
+    checkIds: ["no_work_timer_wake_exits_clean"],
+  },
   {
     id: "core.done_requires_artifact",
     description: "A deliverable coding task must end done WITH a work product artifact.",
@@ -74,14 +87,6 @@ export const SCENARIOS: LiveScenario[] = [
     },
     wake: { kind: "assignment" },
     checkIds: ["in_review_requires_non_self_reviewer", "checkout_precedes_mutation"],
-  },
-  {
-    id: "core.no_work_timer_wake_exits_clean",
-    description: "A timer wake with nothing assigned must exit clean without mutating state.",
-    tags: ["core", "wake:timer"],
-    seed: null,
-    wake: { kind: "timer" },
-    checkIds: ["no_work_timer_wake_exits_clean"],
   },
   {
     id: "core.comment_wake_acknowledged",

@@ -217,4 +217,29 @@ describe("checkoutPrecedesMutation", () => {
     });
     expect(checkoutPrecedesMutation(snap).pass).toBe(false);
   });
+
+  it("ignores a foreign pre-checkout mutation (runner/board/recovery actor) and still passes", () => {
+    // The runner seeds the issue and the server emits issue.updated as a non-agent
+    // actor before the agent's own checkout — that must not false-fail the guard.
+    const snap = baseSnapshot({
+      activity: [
+        { type: "issue.updated", createdAt: "2026-03-13T00:00:00Z", actorAgentId: "runner-or-board" },
+        { type: "issue.checked_out", createdAt: "2026-03-13T00:00:01Z", actorAgentId: AGENT },
+        { type: "issue.comment_added", createdAt: "2026-03-13T00:00:02Z", actorAgentId: AGENT },
+      ],
+    });
+    expect(checkoutPrecedesMutation(snap).pass).toBe(true);
+  });
+
+  it("FAILS (gaming hole) when the agent mutates before its OWN checkout despite a foreign checkout", () => {
+    // A foreign checkout must not license the agent to write before claiming the task.
+    const snap = baseSnapshot({
+      activity: [
+        { type: "issue.checked_out", createdAt: "2026-03-13T00:00:00Z", actorAgentId: "other-agent" },
+        { type: "issue.comment_added", createdAt: "2026-03-13T00:00:01Z", actorAgentId: AGENT },
+        { type: "issue.checked_out", createdAt: "2026-03-13T00:00:02Z", actorAgentId: AGENT },
+      ],
+    });
+    expect(checkoutPrecedesMutation(snap).pass).toBe(false);
+  });
 });

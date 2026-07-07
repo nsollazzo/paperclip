@@ -113,8 +113,13 @@ export async function readEndState(args: ReadEndStateArgs, run: RunSnapshot): Pr
       }));
 
     const rawWps = (await api.get<RawWorkProduct[]>(`/api/issues/${issueId}/work-products`)) ?? [];
+    // Run-scoped, symmetric with comments: only artifacts this heartbeat authored.
+    // The server forces createdByRunId to the agent's run on agent-created work
+    // products (issues.ts resolveWorkProductCreatedByRunId), so strict matching
+    // never drops the agent-under-test's fresh artifact while excluding pre-seeded
+    // or board-created (null run-id) rows that would false-pass doneRequiresArtifact.
     workProducts = rawWps
-      .filter((w) => w.createdByRunId === undefined || w.createdByRunId === null || w.createdByRunId === runId)
+      .filter((w) => w.createdByRunId === runId)
       .map((w) => ({ id: w.id, type: w.type, title: w.title ?? null }));
 
     const rawActivity = (await api.get<RawActivity[]>(`/api/issues/${issueId}/activity`)) ?? [];
