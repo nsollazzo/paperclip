@@ -35,6 +35,8 @@
     "release:github": "./scripts/create-github-release.sh",
     "release:rollback": "./scripts/rollback-latest.sh",
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
+    "evals:heartbeat-prompt:generate": "node cli/node_modules/tsx/dist/cli.mjs evals/promptfoo/scripts/eval-prompt.ts generate",
+    "evals:heartbeat-prompt:check": "node cli/node_modules/tsx/dist/cli.mjs evals/promptfoo/scripts/eval-prompt.ts check",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",

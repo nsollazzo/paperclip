@@ -16,8 +16,11 @@
 
 description: "Paperclip heartbeat behavior evals"
 
+# heartbeat-system.generated.txt is rendered from the shipped agent-prompt
+# template (packages/adapter-utils). Do not hand-edit it — run
+# `pnpm evals:heartbeat-prompt:generate`. CI enforces byte parity.
 prompts:
-  - file://prompts/heartbeat-system.txt
+  - file://prompts/heartbeat-system.generated.txt
 
 providers:
   - id: openrouter:anthropic/claude-sonnet-4-20250514
