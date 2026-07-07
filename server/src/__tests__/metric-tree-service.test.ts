@@ -4,11 +4,15 @@ import { and, eq } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   costEvents,
   createDb,
   heartbeatRuns,
+  heartbeatRunWatchdogDecisions,
+  issueComments,
   issues,
+  issueThreadInteractions,
   issueWorkProducts,
 } from "@paperclipai/db";
 import {
@@ -19,6 +23,9 @@ import {
   type HollowSuccessRate,
   type DispositionTheater,
   type TokensPerVerified,
+  type BabysittingLoad,
+  type StallHealth,
+  type SessionResumeHealth,
 } from "../services/metric-tree.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -56,6 +63,21 @@ function tokens(week: MetricTreeWeek): TokensPerVerified {
   if ("error" in m) throw new Error(`tokens errored: ${m.error}`);
   return m;
 }
+function babysitting(week: MetricTreeWeek): BabysittingLoad {
+  const m = week.babysittingLoad;
+  if ("error" in m) throw new Error(`babysitting errored: ${m.error}`);
+  return m;
+}
+function stall(week: MetricTreeWeek): StallHealth {
+  const m = week.stallHealth;
+  if ("error" in m) throw new Error(`stall errored: ${m.error}`);
+  return m;
+}
+function session(week: MetricTreeWeek): SessionResumeHealth {
+  const m = week.sessionResumeHealth;
+  if ("error" in m) throw new Error(`session errored: ${m.error}`);
+  return m;
+}
 
 describeEmbeddedPostgres("metric-tree service", () => {
   let db!: ReturnType<typeof createDb>;
@@ -73,6 +95,10 @@ describeEmbeddedPostgres("metric-tree service", () => {
   afterEach(async () => {
     await db.delete(costEvents);
     await db.delete(issueWorkProducts);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
+    await db.delete(heartbeatRunWatchdogDecisions);
+    await db.delete(approvals);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -107,7 +133,14 @@ describeEmbeddedPostgres("metric-tree service", () => {
   }
 
   let issueSeq = 0;
-  async function seedIssue(status: string): Promise<string> {
+  type SeedIssueOpts = {
+    createdAt?: Date;
+    updatedAt?: Date;
+    completedAt?: Date;
+    originKind?: string;
+    originId?: string;
+  };
+  async function seedIssue(status: string, opts: SeedIssueOpts = {}): Promise<string> {
     const id = randomUUID();
     issueSeq += 1;
     await db.insert(issues).values({
@@ -118,6 +151,11 @@ describeEmbeddedPostgres("metric-tree service", () => {
       priority: "medium",
       issueNumber: issueSeq,
       identifier: `T-${issueSeq}`,
+      originKind: opts.originKind ?? "manual",
+      originId: opts.originId,
+      completedAt: opts.completedAt,
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      ...(opts.updatedAt ? { updatedAt: opts.updatedAt } : {}),
     });
     return id;
   }
@@ -161,8 +199,16 @@ describeEmbeddedPostgres("metric-tree service", () => {
     });
   }
 
-  async function seedRun(at: Date, status: string, livenessState: string | null, wakeSource = "timer") {
+  async function seedRun(
+    at: Date,
+    status: string,
+    livenessState: string | null,
+    wakeSource = "timer",
+    usageJson?: Record<string, unknown>,
+  ): Promise<string> {
+    const id = randomUUID();
     await db.insert(heartbeatRuns).values({
+      id,
       companyId,
       agentId,
       invocationSource: wakeSource,
@@ -171,7 +217,9 @@ describeEmbeddedPostgres("metric-tree service", () => {
       startedAt: at,
       finishedAt: at,
       createdAt: at,
+      usageJson,
     });
+    return id;
   }
 
   async function seedCost(issueId: string | null, at: Date, inputTokens: number) {
@@ -184,6 +232,76 @@ describeEmbeddedPostgres("metric-tree service", () => {
       inputTokens,
       costCents: 100,
       occurredAt: at,
+    });
+  }
+
+  // Generic activity_log row (for handoff/attention actions not covered by the
+  // dedicated done/reopen helpers above).
+  async function seedActivity(action: string, issueId: string, at: Date, actorType: "agent" | "user" = "agent") {
+    await db.insert(activityLog).values({
+      companyId,
+      actorType,
+      actorId: actorType === "agent" ? agentId : "user-1",
+      agentId: actorType === "agent" ? agentId : null,
+      action,
+      entityType: "issue",
+      entityId: issueId,
+      details: {},
+      createdAt: at,
+    });
+  }
+
+  async function seedComment(
+    issueId: string,
+    at: Date,
+    body: string,
+    author: "agent" | "user" = "agent",
+  ) {
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: author === "agent" ? agentId : null,
+      authorUserId: author === "user" ? "user-1" : null,
+      authorType: author,
+      body,
+      createdAt: at,
+    });
+  }
+
+  async function seedWatchdogDecision(runId: string, decision: string, at: Date) {
+    await db.insert(heartbeatRunWatchdogDecisions).values({
+      companyId,
+      runId,
+      decision,
+      createdAt: at,
+    });
+  }
+
+  async function seedApproval(type: string, status: string, at: Date) {
+    await db.insert(approvals).values({
+      companyId,
+      type,
+      status,
+      payload: {},
+      createdAt: at,
+    });
+  }
+
+  // A thread interaction on `issueId`. Agent-created by default; pass a user
+  // resolver to model a real human response.
+  async function seedInteraction(
+    issueId: string,
+    opts: { createdBy?: "agent" | "user"; resolvedByUser?: boolean } = {},
+  ) {
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: opts.resolvedByUser ? "accepted" : "pending",
+      createdByAgentId: opts.createdBy === "user" ? null : agentId,
+      createdByUserId: opts.createdBy === "user" ? "user-1" : null,
+      resolvedByUserId: opts.resolvedByUser ? "user-1" : null,
+      payload: {},
     });
   }
 
@@ -298,5 +416,145 @@ describeEmbeddedPostgres("metric-tree service", () => {
     expect(stored.length).toBe(1);
     const reloaded = await svc.getPersistedWeek(companyId, WEEK_A);
     expect(reloaded?.weekStart).toBe(week.weekStart);
+  });
+
+  // ---- Metric 5: babysitting load -----------------------------------------
+  it("counts babysitting-load attention signals and first-human-touch dwell", async () => {
+    await seedBase();
+    const anchor = new Date(WEEK_A.getTime() + HOUR);
+
+    // Missing-disposition handoffs (2).
+    const h1 = await seedIssue("in_progress");
+    await seedActivity("issue.successful_run_handoff_required", h1, anchor);
+    await seedActivity("issue.successful_run_handoff_escalated", h1, new Date(WEEK_A.getTime() + 2 * HOUR));
+
+    // Continuation-exhaustion comment (1).
+    const c1 = await seedIssue("in_progress");
+    await seedComment(c1, anchor, "Bounded liveness continuation exhausted (attempt 3); escalating.");
+
+    // Watchdog false-positive dismissals (2).
+    const run = await seedRun(anchor, "succeeded", "completed");
+    await seedWatchdogDecision(run, "dismissed_false_positive", anchor);
+    await seedWatchdogDecision(run, "dismissed_false_positive", new Date(WEEK_A.getTime() + 2 * HOUR));
+
+    // Human reopen (1).
+    const r1 = await seedIssue("todo");
+    await seedReopen(r1, anchor, "user");
+
+    // Pending budget-override approval (1); a non-pending one must not count.
+    await seedApproval("budget_override_required", "pending", anchor);
+    await seedApproval("budget_override_required", "approved", anchor);
+
+    // First-human-touch dwell: an in-week issue a user first touches 3h after create.
+    const p = await seedIssue("in_progress", { createdAt: new Date(WEEK_A.getTime() + HOUR) });
+    await seedComment(p, new Date(WEEK_A.getTime() + 4 * HOUR), "Please prioritise this.", "user");
+
+    const week = await svc.computeWeek(companyId, { weekStart: WEEK_A, now: NOW });
+    const m = babysitting(week);
+    expect(m.missingDispositionAttentions).toBe(2);
+    expect(m.continuationExhaustionComments).toBe(1);
+    expect(m.watchdogDismissals).toBe(2);
+    expect(m.humanReopens).toBe(1);
+    expect(m.pendingBudgetOverrides).toBe(1);
+    expect(m.issuesCreated).toBe(1); // only `p` is created in-week
+    expect(m.issuesTouchedByHuman).toBe(1);
+    expect(m.avgDwellToFirstHumanTouchMs).toBe(3 * HOUR);
+  });
+
+  // ---- Metric 6: stall dwell + re-stall ------------------------------------
+  it("measures stall dwell and re-stall rate across incident keys", async () => {
+    await seedBase();
+    const createdAt = new Date(WEEK_A.getTime() + HOUR);
+
+    // Incident key X: first escalation resolved (3h dwell), second shares the
+    // originId -> the key re-stalled.
+    await seedIssue("done", {
+      originKind: "harness_liveness_escalation",
+      originId: "incident-x",
+      createdAt,
+      completedAt: new Date(WEEK_A.getTime() + 4 * HOUR),
+    });
+    await seedIssue("in_progress", {
+      originKind: "harness_liveness_escalation",
+      originId: "incident-x",
+      createdAt: new Date(WEEK_A.getTime() + 5 * HOUR),
+    });
+
+    // Incident key Y: single escalation, not re-stalled.
+    await seedIssue("in_progress", {
+      originKind: "harness_liveness_escalation",
+      originId: "incident-y",
+      createdAt,
+    });
+
+    const week = await svc.computeWeek(companyId, { weekStart: WEEK_A, now: NOW });
+    const m = stall(week);
+    expect(m.incidents).toBe(3);
+    expect(m.resolvedIncidents).toBe(1);
+    expect(m.avgStallDwellMs).toBe(3 * HOUR);
+    expect(m.distinctIncidentKeys).toBe(2);
+    expect(m.reStalledIncidentKeys).toBe(1);
+    expect(m.reStallRate).toBe(0.5);
+  });
+
+  // ---- Metric 7: session-resume health -------------------------------------
+  it("splits session-resume failure/hollow rates for reused vs fresh runs", async () => {
+    await seedBase();
+    const t = (h: number) => new Date(WEEK_A.getTime() + h * HOUR);
+
+    // Reused runs (3): one failed, one hollow-succeeded, one healthy; segmented by
+    // rotation reason and model via usage_json.
+    await seedRun(t(1), "failed", null, "timer", {
+      sessionReused: "true", sessionRotationReason: "context_limit", model: "claude-opus-4-8",
+    });
+    await seedRun(t(2), "succeeded", "empty_response", "timer", {
+      sessionReused: "true", sessionRotationReason: "context_limit", model: "claude-opus-4-8",
+    });
+    await seedRun(t(3), "succeeded", "completed", "timer", {
+      sessionReused: "true", model: "claude-sonnet-5",
+    });
+
+    // Fresh runs (2): one healthy, one failed. `sessionReused` false/absent -> fresh.
+    await seedRun(t(4), "succeeded", "completed", "timer", { sessionReused: "false" });
+    await seedRun(t(5), "failed", null, "timer", {});
+
+    const week = await svc.computeWeek(companyId, { weekStart: WEEK_A, now: NOW });
+    const m = session(week);
+    expect(m.reusedRuns).toBe(3);
+    expect(m.freshRuns).toBe(2);
+    expect(m.reusedFailureRate).toBeCloseTo(1 / 3);
+    expect(m.freshFailureRate).toBe(0.5);
+    expect(m.reusedHollowRate).toBeCloseTo(1 / 3);
+    expect(m.freshHollowRate).toBe(0);
+    expect(m.byRotationReason.find((r) => r.rotationReason === "context_limit")?.runs).toBe(2);
+    const opus = m.byModel.find((r) => r.model === "claude-opus-4-8");
+    expect(opus?.reusedRuns).toBe(2);
+    expect(opus?.reusedFailed).toBe(1);
+  });
+
+  // ---- Metric 4c: disposition-theater in_review refinement -----------------
+  it("tightens in_review theater to self-created interactions without a user response (4c)", async () => {
+    await seedBase();
+    const stale = new Date(WEEK_A.getTime() + HOUR); // well past the 48h cutoff vs NOW
+
+    // Theater: dwelled >48h, agent-created interaction, no user response.
+    const theaterIssue = await seedIssue("in_review", { updatedAt: stale });
+    await seedInteraction(theaterIssue, { createdBy: "agent" });
+
+    // Real (slow) review: agent-created interaction that a user resolved -> not theater.
+    const resolved = await seedIssue("in_review", { updatedAt: stale });
+    await seedInteraction(resolved, { createdBy: "agent", resolvedByUser: true });
+
+    // Real review: agent interaction plus a user comment on the thread -> not theater.
+    const commented = await seedIssue("in_review", { updatedAt: stale });
+    await seedInteraction(commented, { createdBy: "agent" });
+    await seedComment(commented, new Date(WEEK_A.getTime() + 2 * HOUR), "Looks good, approving.", "user");
+
+    // Bare dwell with no interaction at all: no longer theater under 4c.
+    await seedIssue("in_review", { updatedAt: stale });
+
+    const week = await svc.computeWeek(companyId, { weekStart: WEEK_A, now: NOW });
+    const m = theater(week);
+    expect(m.inReviewDwellOver48h).toBe(1);
   });
 });

@@ -304,6 +304,11 @@ export function metricTreeService(db: Db) {
 
   // 4. Disposition-theater rate: done->reopen <=7d; blocked with no blocker link;
   //    in_review dwell >48h. Rate over issues that reached any disposition in week.
+  //    (4c) The in_review signal is tightened to *self-created-interaction-only*
+  //    review paths: an issue counts only when it has dwelled >48h AND its review is
+  //    backed solely by an agent-created thread interaction that no user has responded
+  //    to (no user-resolved/created interaction, no user comment). Raw dwell alone —
+  //    e.g. a genuine human review that is simply slow — is not theater.
   async function dispositionTheater(
     companyId: string,
     weekStart: Date,
@@ -341,6 +346,22 @@ export function metricTreeService(db: Db) {
         SELECT i.id FROM issues i
         WHERE i.company_id = ${companyId} AND i.status = 'in_review'
           AND i.updated_at <= ${new Date(now.getTime() - METRIC_TREE_IN_REVIEW_DWELL_MS).toISOString()}::timestamptz
+          -- 4c: only self-created-interaction-only review paths count as theater.
+          AND EXISTS (
+            SELECT 1 FROM issue_thread_interactions it
+            WHERE it.company_id = ${companyId} AND it.issue_id = i.id
+              AND it.created_by_agent_id IS NOT NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM issue_thread_interactions itu
+            WHERE itu.company_id = ${companyId} AND itu.issue_id = i.id
+              AND (itu.resolved_by_user_id IS NOT NULL OR itu.created_by_user_id IS NOT NULL)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM issue_comments ic
+            WHERE ic.company_id = ${companyId} AND ic.issue_id = i.id
+              AND ic.author_user_id IS NOT NULL
+          )
       ),
       dispositions AS (
         SELECT DISTINCT al.entity_id AS issue_id FROM activity_log al
